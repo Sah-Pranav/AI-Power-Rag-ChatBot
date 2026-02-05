@@ -30,3 +30,11 @@ AI Power RAG ChatBot is a tool for extracting, parsing, and reasoning over docum
 ```bash
 git clone https://github.com/your-username/AIPower-Rag-ChatBot.git
 cd AIPower-Rag-ChatBot
+
+# Running the app
+## Start backend
+python -m api.main
+
+## Start frontend
+streamlit run frontend/app.py
+

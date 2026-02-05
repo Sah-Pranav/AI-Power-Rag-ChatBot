@@ -50,10 +50,10 @@ def main():
     # Questions about your app.build research paper
     test_queries = [
         "What is app.build and what problem does it solve?",
-        "Who are the authors of this paper? List their names and affiliations.",
-        "What is environment scaffolding and how does it work?",
-        "What are the key differences between model-centric generation and environment scaffolding?",
-        "What were the main experimental results and findings?",
+        # "Who are the authors of this paper? List their names and affiliations.",
+        # "What is environment scaffolding and how does it work?",
+        # "What are the key differences between model-centric generation and environment scaffolding?",
+        # "What were the main experimental results and findings?",
     ]
     
     for i, query in enumerate(test_queries, 1):
