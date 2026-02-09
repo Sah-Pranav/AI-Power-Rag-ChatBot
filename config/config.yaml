@@ -35,7 +35,9 @@ chunking:
 
 retrieval:
   top_k: 5
-  score_threshold: 0.7
+  strategy: mmr
+  fetch_k: 25
+  mmr_lambda: 0.6
 
 logging:
   level: INFO

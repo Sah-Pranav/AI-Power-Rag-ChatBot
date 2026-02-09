@@ -41,3 +41,67 @@ async def get_collection_info():
     except Exception as e:
         logger.error(f"❌ Failed to get collection info: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+@router.get("/list")
+async def list_documents():
+    """
+    List all documents in the collection
+    Returns document sources with chunk counts
+    """
+    try:
+        doc_service = get_document_service()
+        documents = doc_service.list_documents()
+        
+        return {
+            "documents": documents,
+            "total_documents": sum(doc["chunk_count"] for doc in documents),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to list documents: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/source/{source_name}")
+async def delete_document_by_source(source_name: str):
+    """
+    Delete all chunks from a specific document source
+    """
+    try:
+        doc_service = get_document_service()
+        deleted_count = doc_service.delete_by_source(source_name)
+        
+        logger.info(f"🗑️ Deleted {deleted_count} chunks from {source_name}")
+        
+        return {
+            "status": "success",
+            "source": source_name,
+            "chunks_deleted": deleted_count,
+            "message": f"Deleted {deleted_count} chunks from {source_name}"
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to delete document: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/all")
+async def clear_all_documents():
+    """
+    Clear all documents from the collection
+    WARNING: This cannot be undone!
+    """
+    try:
+        doc_service = get_document_service()
+        deleted_count = doc_service.clear_all()
+        
+        logger.warning(f"🗑️ Cleared ALL documents ({deleted_count} chunks)")
+        
+        return {
+            "status": "success",
+            "chunks_deleted": deleted_count,
+            "message": f"Cleared all {deleted_count} chunks from the collection"
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to clear documents: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
