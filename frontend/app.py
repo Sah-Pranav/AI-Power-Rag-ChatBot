@@ -1,149 +1,246 @@
-# api/services/document_service.py
+# frontend/app.py
 
-import os
-from pathlib import Path
-from fastapi import UploadFile
-from app.ingestion.pymupdf_loader import load_and_process_pdf
-from app.embeddings.vectorstore import get_vectorstore
-from utils.logger import logger
+import streamlit as st
+import requests
+import time
+from urllib.parse import quote
 
+API_URL = "http://localhost:8000"
 
-class DocumentService:
-    """Business logic for document operations"""
+st.set_page_config(
+    page_title="RAG Chatbot",
+    page_icon="🤖",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-    def __init__(self):
-        self.vectorstore = get_vectorstore()
-        self.upload_dir = "./data/uploads"
-        os.makedirs(self.upload_dir, exist_ok=True)
+st.markdown(
+    """
+<style>
+    .main-header {
+        text-align: center;
+        padding: 1rem 0;
+        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border-radius: 10px;
+        margin-bottom: 2rem;
+    }
+    .stChatMessage {
+        border-radius: 10px;
+        padding: 1rem;
+        margin: 0.5rem 0;
+    }
+</style>
+""",
+    unsafe_allow_html=True,
+)
 
-    async def upload_and_process(self, file: UploadFile) -> dict:
-        """Upload and process a PDF document"""
-
-        if not file.filename or not file.filename.lower().endswith(".pdf"):
-            raise ValueError("Only PDF files are supported")
-
-        # Prevent path traversal / weird filenames
-        safe_name = Path(file.filename).name
-
-        logger.info(f"📤 Processing: {safe_name}")
-
-        temp_path = os.path.join(self.upload_dir, safe_name)
-
-        # Save upload
-        with open(temp_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
-
-        try:
-            documents = load_and_process_pdf(temp_path, source_name=safe_name)
-            doc_ids = self.vectorstore.add_documents(documents)
-
-            logger.info(f"✅ Processed: {len(doc_ids)} chunks")
-
-            return {
-                "status": "success",
-                "filename": safe_name,
-                "chunks_created": len(doc_ids),
-            }
-
-        finally:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-
-    def get_collection_info(self) -> dict:
-        """Get information about document collection"""
-        count = self.vectorstore.get_collection_count()
-        return {
-            "total_documents": count,
-            "collection_name": "document_collection",
-        }
-
-    def list_documents(self) -> list:
-        """
-        List all documents grouped by source
-        Returns list of documents with chunk counts
-        """
-        try:
-            collection = self.vectorstore.vectorstore._collection
-            results = collection.get(include=["metadatas"])
-
-            if not results or not results.get("metadatas"):
-                return []
-
-            from collections import defaultdict
-            sources = defaultdict(int)
-
-            for metadata in results["metadatas"]:
-                source = (metadata or {}).get("source", "Unknown")
-                sources[source] += 1
-
-            documents = [
-                {"name": source, "chunk_count": count, "source": source}
-                for source, count in sources.items()
-            ]
-
-            return sorted(documents, key=lambda x: x["name"])
-
-        except Exception as e:
-            logger.error(f"❌ Failed to list documents: {e}")
-            return []
-
-    def delete_by_source(self, source_name: str) -> int:
-        """
-        Delete all chunks from a specific source
-        Returns number of chunks deleted
-        """
-        try:
-            collection = self.vectorstore.vectorstore._collection
-
-            results = collection.get(where={"source": source_name})
-            ids_to_delete = results.get("ids", []) if results else []
-
-            if not ids_to_delete:
-                logger.warning(f"No documents found for source: {source_name}")
-                return 0
-
-            collection.delete(ids=ids_to_delete)
-
-            logger.info(f"✅ Deleted {len(ids_to_delete)} chunks from {source_name}")
-            return len(ids_to_delete)
-
-        except Exception as e:
-            logger.error(f"❌ Failed to delete by source: {e}")
-            raise
-
-    def clear_all(self) -> int:
-        """
-        Clear all documents WITHOUT deleting the collection.
-        Keeps the in-memory Chroma handle valid.
-        """
-        try:
-            collection = self.vectorstore.vectorstore._collection
-
-            # Most compatible way to get all ids
-            results = collection.get()
-            ids = results.get("ids", []) if results else []
-
-            if not ids:
-                logger.warning("🗑️ Collection already empty")
-                return 0
-
-            collection.delete(ids=ids)
-
-            logger.warning(f"🗑️ Cleared all documents ({len(ids)} chunks)")
-            return len(ids)
-
-        except Exception as e:
-            logger.error(f"❌ Failed to clear all: {e}")
-            raise
+# Session state
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
 
-_document_service = None
+def safe_request(method: str, url: str, timeout: int = 20, **kwargs):
+    """Safe wrapper around requests.request"""
+    try:
+        return requests.request(method, url, timeout=timeout, **kwargs)
+    except Exception as e:
+        st.error(f"Request failed: {e}")
+        return None
 
 
-def get_document_service() -> DocumentService:
-    """Get document service instance"""
-    global _document_service
-    if _document_service is None:
-        _document_service = DocumentService()
-    return _document_service
+def check_api_status() -> bool:
+    try:
+        r = requests.get(f"{API_URL}/health", timeout=2)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+# ---------------- Sidebar ----------------
+with st.sidebar:
+    st.header("⚙️ Configuration")
+
+    api_ok = check_api_status()
+    if api_ok:
+        st.success("🟢 API Connected")
+    else:
+        st.error("🔴 API Disconnected")
+        st.caption("Make sure FastAPI is running on port 8000")
+
+    st.divider()
+
+    st.subheader("📊 Query Settings")
+    top_k = st.slider("Documents to retrieve", 1, 10, 3)
+
+    st.divider()
+
+    st.subheader("📤 Upload Document")
+    uploaded_file = st.file_uploader("Choose a PDF file", type=["pdf"])
+
+    if uploaded_file and st.button("📥 Process Document", use_container_width=True):
+        with st.spinner("Processing document..."):
+            resp = safe_request(
+                "POST",
+                f"{API_URL}/documents/upload",
+                files={"file": uploaded_file},
+                timeout=120,
+            )
+            if resp is not None and resp.status_code == 200:
+                data = resp.json()
+                st.success(f"✅ Processed {data['chunks_created']} chunks from {data['filename']}")
+                time.sleep(0.5)
+                st.rerun()
+            else:
+                st.error(f"❌ Upload failed: {resp.text if resp else ''}")
+
+    st.divider()
+
+    st.subheader("📚 Document Manager")
+
+    if st.button("🔄 Refresh document list", use_container_width=True):
+        st.rerun()
+
+    resp = safe_request("GET", f"{API_URL}/documents/list", timeout=20)
+    if resp is not None and resp.status_code == 200:
+        data = resp.json()
+        documents = data.get("documents", [])
+        total_docs = data.get("total_documents", 0)
+
+        st.caption(f"Total chunks in DB: {total_docs}")
+
+        if not documents:
+            st.info("No documents found in the collection yet.")
+        else:
+            for doc in documents:
+                name = doc.get("name", doc.get("source", "Unknown"))
+                chunk_count = doc.get("chunk_count", 0)
+
+                with st.container(border=True):
+                    st.markdown(f"**{name}**")
+                    st.caption(f"Chunks: {chunk_count}")
+
+                    if st.button(f"🗑️ Delete {name}", key=f"del_{name}", use_container_width=True):
+                        del_resp = safe_request(
+                            "DELETE",
+                            f"{API_URL}/documents/source/{quote(name)}",
+                            timeout=60,
+                        )
+                        if del_resp is not None and del_resp.status_code == 200:
+                            st.success(f"Deleted: {name}")
+                            st.rerun()
+                        else:
+                            st.error(f"Delete failed: {del_resp.text if del_resp else ''}")
+    else:
+        st.warning("Could not load document list. Is the API running?")
+
+    st.divider()
+
+    st.subheader("⚠️ Danger Zone")
+    confirm_clear = st.checkbox("I understand this will delete all documents", value=False)
+
+    if st.button("🔥 Clear ALL documents", use_container_width=True, disabled=not confirm_clear):
+        clear_resp = safe_request("DELETE", f"{API_URL}/documents/all", timeout=60)
+        if clear_resp is not None and clear_resp.status_code == 200:
+            st.success("All documents cleared.")
+            st.rerun()
+        else:
+            st.error(f"Clear failed: {clear_resp.text if clear_resp else ''}")
+
+    # ✅ Clear Chat (ONLY show when chat exists)
+    st.divider()
+    if len(st.session_state.messages) > 0:
+        if st.button("🗑️ Clear Chat", use_container_width=True):
+            st.session_state.messages.clear()
+            st.rerun()
+
+    st.divider()
+    st.subheader("👨‍💻 Developed by")
+    st.markdown("**Pranav Sah**")
+
+    st.caption("🚀 Built with FastAPI + Streamlit + Ollama")
+
+
+# ---------------- Main ----------------
+st.markdown(
+    """
+<div class="main-header">
+    <h1>🤖 RAG Chatbot</h1>
+    <p>Ask questions about your documents and get AI-powered answers with citations</p>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+
+# Welcome
+if len(st.session_state.messages) == 0:
+    st.markdown("### 👋 Welcome! Get started by:")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.info("**1️⃣ Upload a PDF**\nUse the sidebar to upload your document")
+    with c2:
+        st.info("**2️⃣ Ask Questions**\nType your question in the chat below")
+    with c3:
+        st.info("**3️⃣ Get Answers**\nReceive AI-generated answers with sources")
+
+# Chat history
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+        if msg.get("sources"):
+            with st.expander(f"📚 View {len(msg['sources'])} Sources"):
+                for i, src in enumerate(msg["sources"], 1):
+                    st.markdown(f"**{i}. {src.get('source', 'Unknown')}** (Page {src.get('page', 'N/A')})")
+                    rel = src.get("relevance")
+                    if rel is not None:
+                        st.caption(f"Relevance: {rel:.3f}")
+                    st.code(src.get("content_preview", ""), language="text")
+
+        if msg.get("query_time") is not None:
+            st.caption(f"⏱️ Response time: {msg['query_time']:.2f}s")
+
+prompt = st.chat_input("Ask a question about your documents...")
+
+if prompt:
+    # Save user message
+    st.session_state.messages.append({"role": "user", "content": prompt})
+
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        with st.spinner("🤔 Thinking..."):
+            start_time = time.time()
+            resp = safe_request(
+                "POST",
+                f"{API_URL}/query",
+                json={"question": prompt, "top_k": top_k},
+                timeout=120,
+            )
+            query_time = time.time() - start_time
+
+            if resp is not None and resp.status_code == 200:
+                data = resp.json()
+                answer = data.get("answer", "")
+                sources = data.get("sources", [])
+
+                st.markdown(answer)
+
+                if sources:
+                    with st.expander(f"📚 View {len(sources)} Sources"):
+                        for i, src in enumerate(sources, 1):
+                            st.markdown(f"**{i}. {src.get('source', 'Unknown')}** (Page {src.get('page', 'N/A')})")
+                            rel = src.get("relevance")
+                            if rel is not None:
+                                st.caption(f"Relevance: {rel:.3f}")
+                            st.code(src.get("content_preview", ""), language="text")
+
+                st.caption(f"⏱️ Response time: {query_time:.2f}s")
+
+                # Save assistant message
+                st.session_state.messages.append(
+                    {"role": "assistant", "content": answer, "sources": sources, "query_time": query_time}
+                )
+            else:
+                st.error(f"❌ Error: {resp.text if resp else 'No response'}")

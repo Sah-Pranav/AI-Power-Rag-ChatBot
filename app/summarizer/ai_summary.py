@@ -1,195 +1,126 @@
-# app/ingestion/pymupdf_loader.py
-
-import os
+from typing import Dict, Optional
 import re
-import fitz  # PyMuPDF
-from typing import List, Dict
-from langchain_core.documents import Document
+from langchain_core.prompts import ChatPromptTemplate
+from app.summarizer.llm_factory import get_llm
+from app.retriever.query import get_retriever
 from utils.logger import logger
 
 
-def extract_text_from_pdf(pdf_path: str) -> List[Dict]:
-    """
-    Extract text from PDF using PyMuPDF.
-    Returns list of dicts with page_content, page_number, total_pages.
-    """
-    logger.info(f"📄 Extracting text from: {pdf_path}")
-
-    try:
-        doc = fitz.open(pdf_path)
-        pages_content = []
-
-        for page_num in range(len(doc)):
-            page = doc[page_num]
-            text = page.get_text("text")
-
-            if text and text.strip():
-                pages_content.append({
-                    "page_content": text,
-                    "page_number": page_num + 1,
-                    "total_pages": len(doc)
-                })
-
-        logger.info(f"✅ Extracted text from {len(pages_content)} pages")
-        return pages_content
-
-    except Exception as e:
-        logger.error(f"❌ Failed to extract text: {e}")
-        raise
-
-    finally:
-        doc.close()
-
-def clean_text(text: str) -> str:
-    """
-    Light normalization for PDFs:
-    - keep paragraph breaks
-    - fix hyphenation
-    - merge line-wrap newlines inside paragraphs
-    """
-    if not text:
-        return ""
-
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-
-    # Fix hyphenation across line breaks: "para-\ngraph" -> "paragraph"
-    text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)
-
-    # Merge single newlines inside a paragraph into spaces (keep blank lines as paragraph breaks)
-    text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
-
-    # Normalize multiple blank lines to exactly one blank line
-    text = re.sub(r"\n{3,}", "\n\n", text)
-
-    # Normalize spaces/tabs
-    text = re.sub(r"[ \t]{2,}", " ", text)
-
-    return text.strip()
-
-
-def split_into_paragraphs(text: str) -> List[str]:
-    return [p.strip() for p in text.split("\n\n") if p.strip()]
-
-
-def split_into_sentences(text: str) -> List[str]:
-    """
-    Simple sentence split (no extra deps).
-    """
-    t = text.strip()
-    if not t:
-        return []
-    sents = re.split(r"(?<=[.!?])\s+", t)
-    return [s.strip() for s in sents if s.strip()]
-
-
-def strip_leading_dots(text: str) -> str:
+def _strip_leading_junk(text: str) -> str:
     t = (text or "").lstrip()
     while t.startswith("...") or t.startswith("…") or t.startswith("."):
         t = t.lstrip(".… ").lstrip()
     return t
 
 
-def apply_overlap(prev_chunk: str, overlap_chars: int) -> List[str]:
+def _preview_text(text: str, max_chars: int = 450) -> str:
     """
-    Create starting content for next chunk from end of previous chunk,
-    trying to start at a sentence boundary.
+    Clean preview for UI:
+    - remove leading junk (..., …)
+    - normalize whitespace
+    - merge PDF line-wrap breaks
+    - add ellipsis only if truncated
     """
-    if overlap_chars <= 0 or not prev_chunk:
-        return []
+    raw = _strip_leading_junk(text)
 
-    tail = prev_chunk[-overlap_chars:].strip()
+    raw = raw.replace("\r\n", "\n").replace("\r", "\n")
 
-    # Try to start overlap after the last sentence-ending punctuation
-    m = re.search(r"([.!?])\s+[^.!?]*$", tail)
-    if m:
-        tail = tail[m.start(1) + 1:].strip()
+    # collapse excessive blank lines
+    raw = re.sub(r"\n{3,}", "\n\n", raw)
 
-    return [tail] if tail else []
+    # join single newlines (PDF line-wrap)
+    raw = re.sub(r"(?<!\n)\n(?!\n)", " ", raw)
 
+    # remove weird "space before punctuation" artifacts
+    raw = re.sub(r"\s+([.,;:!?])", r"\1", raw)
 
-def pack_text_into_chunks(text: str, chunk_size: int, chunk_overlap: int) -> List[str]:
-    """
-    Pack paragraphs/sentences into chunks up to chunk_size with overlap.
-    """
-    chunks: List[str] = []
-    current: List[str] = []
+    # normalize spaces
+    raw = re.sub(r"[ \t]{2,}", " ", raw).strip()
 
-    def current_len() -> int:
-        return sum(len(x) for x in current) + max(0, len(current) - 1)
+    if len(raw) <= max_chars:
+        return raw
 
-    paragraphs = split_into_paragraphs(text)
+    cut = raw[:max_chars].rstrip()
 
-    for p in paragraphs:
-        if len(p) <= chunk_size:
-            if current and current_len() + 2 + len(p) > chunk_size:
-                chunk = "\n\n".join(current).strip()
-                chunks.append(chunk)
-                current = apply_overlap(chunk, chunk_overlap)
-            current.append(p)
-            continue
+    # avoid cutting mid-word
+    if len(raw) > max_chars and max_chars > 50:
+        cut = re.sub(r"\s+\S*$", "", cut).rstrip()
 
-        # paragraph too long -> sentence pack
-        for s in split_into_sentences(p):
-            if current and current_len() + 1 + len(s) > chunk_size:
-                chunk = "\n\n".join(current).strip()
-                chunks.append(chunk)
-                current = apply_overlap(chunk, chunk_overlap)
-            current.append(s)
-
-    if current:
-        chunks.append("\n\n".join(current).strip())
-
-    return [strip_leading_dots(c) for c in chunks if c.strip()]
+    return cut + "…"
 
 
-def chunk_text_by_pages(
-    pages_content: List[Dict],
-    source_name: str,
-    chunk_size: int = 1500,
-    chunk_overlap: int = 250
-) -> List[Document]:
-    """
-    Production-style chunking:
-    - clean text (fix line-wrap)
-    - preserve paragraphs
-    - split long paragraphs into sentences
-    - pack into chunks with overlap
-    """
-    logger.info("🔨 Creating chunks from pages (paragraph/sentence-aware)...")
-    documents: List[Document] = []
+class RAGPipeline:
+    """Complete RAG pipeline: Retrieval + Generation"""
 
-    for page_data in pages_content:
-        page_num = page_data["page_number"]
-        cleaned = clean_text(page_data["page_content"])
+    def __init__(self):
+        self.llm = get_llm()
+        self.retriever = get_retriever()
+        self._setup_prompt()
 
-        if len(cleaned) < 80:
-            continue
+    def _setup_prompt(self):
+        self.prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a technical assistant answering questions using provided documents.
 
-        chunks = pack_text_into_chunks(cleaned, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+RULES:
+1. Use ONLY the provided documents.
+2. If a definition exists, quote or paraphrase the definition clearly.
+3. Prefer definition sentences over general context.
+4. Do not say information is missing if relevant sentences are present.
+5. Be concise and factual.
+6. ALWAYS answer in English only.
 
-        for i, chunk in enumerate(chunks):
-            if len(chunk) < 120:
-                continue
+Context:
+{context}
+"""),
+            ("human", "{question}")
+        ])
 
-            documents.append(
-                Document(
-                    page_content=chunk,
-                    metadata={
-                        "source": source_name,
-                        "page": page_num,
-                        "chunk_index": i,
-                        "total_chunks": len(chunks),
-                    }
-                )
-            )
+    def query(self, question: str, top_k: int = None, return_sources: bool = True) -> Dict:
+        logger.info(f"❓ Processing question: '{question}'")
 
-    logger.info(f"✅ Created {len(documents)} document chunks")
-    return documents
+        retrieved_docs = self.retriever.retrieve(question, top_k=top_k, with_scores=True)
+
+        if not retrieved_docs:
+            logger.warning("⚠️ No relevant documents found")
+            return {
+                "answer": "I could not find relevant information to answer your question.",
+                "sources": [],
+                "retrieved_docs": 0
+            }
+
+        context = self.retriever.format_context(retrieved_docs)
+
+        logger.info("🤖 Generating answer with LLM...")
+        chain = self.prompt | self.llm
+        response = chain.invoke({"context": context, "question": question})
+
+        result: Dict = {
+            "answer": response.content,
+            "retrieved_docs": len(retrieved_docs)
+        }
+
+        if return_sources:
+            sources = []
+            for doc, score in retrieved_docs:
+                rel: Optional[float] = None
+                try:
+                    if score is not None and float(score) > 0:
+                        rel = round(1 / (1 + float(score)), 3)
+                except Exception:
+                    rel = None
+
+                sources.append({
+                    "source": doc.metadata.get("source", "Unknown"),
+                    "page": doc.metadata.get("page", "N/A"),
+                    "relevance": rel,
+                    "content_preview": _preview_text(doc.page_content, max_chars=450),
+                })
+
+            result["sources"] = sources
+
+        logger.info("✅ Answer generated successfully")
+        return result
 
 
-def load_and_process_pdf(pdf_path: str, source_name: str = None) -> List[Document]:
-    if source_name is None:
-        source_name = os.path.basename(pdf_path)
-
-    pages_content = extract_text_from_pdf(pdf_path)
-    return chunk_text_by_pages(pages_content, source_name)
+def get_rag_pipeline() -> RAGPipeline:
+    return RAGPipeline()
