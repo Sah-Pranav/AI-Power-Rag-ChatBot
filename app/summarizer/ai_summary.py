@@ -5,53 +5,26 @@ from app.summarizer.llm_factory import get_llm
 from app.retriever.query import get_retriever
 from utils.logger import logger
 
-
 def _strip_leading_junk(text: str) -> str:
     t = (text or "").lstrip()
     while t.startswith("...") or t.startswith("…") or t.startswith("."):
         t = t.lstrip(".… ").lstrip()
     return t
 
-
 def _preview_text(text: str, max_chars: int = 450) -> str:
-    """
-    Clean preview for UI:
-    - remove leading junk (..., …)
-    - normalize whitespace
-    - merge PDF line-wrap breaks
-    - add ellipsis only if truncated
-    """
     raw = _strip_leading_junk(text)
 
     raw = raw.replace("\r\n", "\n").replace("\r", "\n")
-
-    # collapse excessive blank lines
     raw = re.sub(r"\n{3,}", "\n\n", raw)
-
-    # join single newlines (PDF line-wrap)
-    raw = re.sub(r"(?<!\n)\n(?!\n)", " ", raw)
-
-    # remove weird "space before punctuation" artifacts
-    raw = re.sub(r"\s+([.,;:!?])", r"\1", raw)
-
-    # normalize spaces
-    raw = re.sub(r"[ \t]{2,}", " ", raw).strip()
+    raw = re.sub(r"(?<!\n)\n(?!\n)", " ", raw)  # join line-wrap newlines
+    raw = re.sub(r"[ \t]{2,}", " ", raw)
+    raw = raw.strip()
 
     if len(raw) <= max_chars:
         return raw
-
-    cut = raw[:max_chars].rstrip()
-
-    # avoid cutting mid-word
-    if len(raw) > max_chars and max_chars > 50:
-        cut = re.sub(r"\s+\S*$", "", cut).rstrip()
-
-    return cut + "…"
-
+    return raw[:max_chars].rstrip() + "…"
 
 class RAGPipeline:
-    """Complete RAG pipeline: Retrieval + Generation"""
-
     def __init__(self):
         self.llm = get_llm()
         self.retriever = get_retriever()
@@ -75,33 +48,29 @@ Context:
             ("human", "{question}")
         ])
 
-    def query(self, question: str, top_k: int = None, return_sources: bool = True) -> Dict:
-        logger.info(f"❓ Processing question: '{question}'")
+    def query(self, question: str, top_k: int = None, source: Optional[str] = None, return_sources: bool = True) -> Dict:
+        logger.info(f"❓ Processing: '{question}' | source={source}")
 
-        retrieved_docs = self.retriever.retrieve(question, top_k=top_k, with_scores=True)
+        retrieved = self.retriever.retrieve(
+            question,
+            top_k=top_k,
+            with_scores=True,
+            source=source,
+        )
 
-        if not retrieved_docs:
-            logger.warning("⚠️ No relevant documents found")
-            return {
-                "answer": "I could not find relevant information to answer your question.",
-                "sources": [],
-                "retrieved_docs": 0
-            }
+        if not retrieved:
+            return {"answer": "I could not find relevant information to answer your question.", "sources": [], "retrieved_docs": 0}
 
-        context = self.retriever.format_context(retrieved_docs)
+        context = self.retriever.format_context(retrieved)
 
-        logger.info("🤖 Generating answer with LLM...")
         chain = self.prompt | self.llm
         response = chain.invoke({"context": context, "question": question})
 
-        result: Dict = {
-            "answer": response.content,
-            "retrieved_docs": len(retrieved_docs)
-        }
+        result: Dict = {"answer": response.content, "retrieved_docs": len(retrieved)}
 
         if return_sources:
             sources = []
-            for doc, score in retrieved_docs:
+            for doc, score in retrieved:
                 rel: Optional[float] = None
                 try:
                     if score is not None and float(score) > 0:
@@ -115,12 +84,9 @@ Context:
                     "relevance": rel,
                     "content_preview": _preview_text(doc.page_content, max_chars=450),
                 })
-
             result["sources"] = sources
 
-        logger.info("✅ Answer generated successfully")
         return result
-
 
 def get_rag_pipeline() -> RAGPipeline:
     return RAGPipeline()

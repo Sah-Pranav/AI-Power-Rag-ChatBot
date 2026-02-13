@@ -35,11 +35,12 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Session state
+# ---------------- Session State ----------------
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
 
+# ---------------- Helpers ----------------
 def safe_request(method: str, url: str, timeout: int = 20, **kwargs):
     """Safe wrapper around requests.request"""
     try:
@@ -75,6 +76,7 @@ with st.sidebar:
 
     st.divider()
 
+    # Upload
     st.subheader("📤 Upload Document")
     uploaded_file = st.file_uploader("Choose a PDF file", type=["pdf"])
 
@@ -96,8 +98,8 @@ with st.sidebar:
 
     st.divider()
 
+    # Document Manager
     st.subheader("📚 Document Manager")
-
     if st.button("🔄 Refresh document list", use_container_width=True):
         st.rerun()
 
@@ -136,6 +138,7 @@ with st.sidebar:
 
     st.divider()
 
+    # Danger zone
     st.subheader("⚠️ Danger Zone")
     confirm_clear = st.checkbox("I understand this will delete all documents", value=False)
 
@@ -147,17 +150,19 @@ with st.sidebar:
         else:
             st.error(f"Clear failed: {clear_resp.text if clear_resp else ''}")
 
-    # ✅ Clear Chat (ONLY show when chat exists)
     st.divider()
-    if len(st.session_state.messages) > 0:
+
+    # Clear Chat (ONLY show if chat exists)
+    if st.session_state.messages:
         if st.button("🗑️ Clear Chat", use_container_width=True):
-            st.session_state.messages.clear()
+            st.session_state.messages = []
             st.rerun()
 
-    st.divider()
+        st.divider()
+
+    # Developer info (always visible)
     st.subheader("👨‍💻 Developed by")
     st.markdown("**Pranav Sah**")
-
     st.caption("🚀 Built with FastAPI + Streamlit + Ollama")
 
 
@@ -172,18 +177,20 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Welcome
-if len(st.session_state.messages) == 0:
+# Welcome screen (ONLY when no messages)
+if not st.session_state.messages:
     st.markdown("### 👋 Welcome! Get started by:")
-    c1, c2, c3 = st.columns(3)
-    with c1:
+    col1, col2, col3 = st.columns(3)
+    with col1:
         st.info("**1️⃣ Upload a PDF**\nUse the sidebar to upload your document")
-    with c2:
+    with col2:
         st.info("**2️⃣ Ask Questions**\nType your question in the chat below")
-    with c3:
+    with col3:
         st.info("**3️⃣ Get Answers**\nReceive AI-generated answers with sources")
+    st.divider()
 
-# Chat history
+
+# ---------------- Chat History ----------------
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
@@ -200,10 +207,11 @@ for msg in st.session_state.messages:
         if msg.get("query_time") is not None:
             st.caption(f"⏱️ Response time: {msg['query_time']:.2f}s")
 
+
+# ---------------- Chat Input ----------------
 prompt = st.chat_input("Ask a question about your documents...")
 
 if prompt:
-    # Save user message
     st.session_state.messages.append({"role": "user", "content": prompt})
 
     with st.chat_message("user"):
@@ -238,7 +246,6 @@ if prompt:
 
                 st.caption(f"⏱️ Response time: {query_time:.2f}s")
 
-                # Save assistant message
                 st.session_state.messages.append(
                     {"role": "assistant", "content": answer, "sources": sources, "query_time": query_time}
                 )
