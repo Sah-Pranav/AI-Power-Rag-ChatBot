@@ -1,11 +1,10 @@
-# frontend/app.py
-
-import streamlit as st
-import requests
+import os
 import time
+import requests
+import streamlit as st
 from urllib.parse import quote
 
-API_URL = "http://localhost:8000"
+API_URL = os.getenv("API_URL", "http://localhost:8000")
 
 st.set_page_config(
     page_title="RAG Chatbot",

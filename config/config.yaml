@@ -2,7 +2,7 @@ embeddings:
   provider: ollama
   ollama:
     model: nomic-embed-text
-    base_url: http://localhost:11434
+    base_url: ${OLLAMA_BASE_URL}
   openai:
     model: text-embedding-3-large
     api_key: ${OPENAI_API_KEY}
@@ -11,7 +11,7 @@ llm:
   provider: ollama
   ollama:
     model: llama3.1
-    base_url: http://localhost:11434
+    base_url: ${OLLAMA_BASE_URL}
     temperature: 0.1
   openai:
     model: gpt-4

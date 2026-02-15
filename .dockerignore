@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# Envs
+.venv/
+venv/
+env/
+
+# Git
+.git/
+.gitignore
+
+# OS
+.DS_Store
+
+# Data / runtime
+data/uploads/
+data/chroma_db/
+logs/
+
+# Streamlit cache
+.streamlit/
