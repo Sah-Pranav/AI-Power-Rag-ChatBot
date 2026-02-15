@@ -1,5 +1,3 @@
-# scripts/run_full_pipeline.py
-
 """
 Complete RAG pipeline smoke test with a PDF using PyMuPDF
 Usage:

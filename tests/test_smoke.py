@@ -1,4 +1,3 @@
-# tests/test_smoke.py
 """
 Minimal smoke test:
 - Ingest a PDF (by path)

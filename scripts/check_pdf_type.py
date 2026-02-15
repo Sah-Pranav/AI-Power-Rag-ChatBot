@@ -1,5 +1,3 @@
-# scripts/check_pdf_type.py
-
 import fitz  # PyMuPDF
 
 pdf_path = "./docs/sample.pdf"  # change if needed
