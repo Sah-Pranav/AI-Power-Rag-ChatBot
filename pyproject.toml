@@ -13,7 +13,5 @@ dependencies = [
     "langchain-openai",
     "langchain-chroma",
     "chromadb",
-    "unstructured[all-docs]",
     "python-dotenv",
-    "pillow",
 ]

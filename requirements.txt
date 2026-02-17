@@ -14,13 +14,11 @@ langchain-ollama
 chromadb
 ollama
 
-# Document parsing & OCR
-unstructured[all-docs]
-
 # Utilities
 python-dotenv
 pillow
 pyyaml
 
+#Document parsing
 pymupdf
 langchain-text-splitters
